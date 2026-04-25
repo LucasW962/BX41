@@ -14,6 +14,10 @@ type Channel = Types.Channel
 type Disconnectable = Types.Disconnectable
 type Serializable = Types.Serializable
 type SerializableDescriptor = Types.SerializableDescriptor
+type IntegrityClockMode = Types.IntegrityClockMode
+type IntegrityOptions = Types.IntegrityOptions
+type IntegrityConfig = Types.IntegrityConfig
+type ClockState = Types.ClockState
 type BX41 = Types.BX41
 type BX41Module = Types.BX41Module
 
@@ -24,6 +28,13 @@ type EventServerHandler = (player: Player, ...Serializable) -> ()
 type EventClientHandler = (...Serializable) -> ()
 type FunctionServerHandler = (player: Player, ...Serializable) -> ...Serializable
 type FunctionClientHandler = (...Serializable) -> ...Serializable
+
+-- SIDE NOTE: these are exported as functions have to be casted, overloads are too complex
+export type ServerFunctionChannel<Args...> = Types.ServerFunctionChannel<Args...>
+export type ClientFunctionChannel<Args...> = Types.ClientFunctionChannel<Args...>
+export type ServerFunctionReturns<R...> = Types.TypedServerFunctionChannel<R...>
+export type ClientFunctionReturns<R...> = Types.TypedClientFunctionChannel<R...>
+export type BothFunctionReturns<R...> = Types.TypedBothFunctionChannel<R...>
 
 const DEFAULT_REMOTE_EVENT_NAME = "BX41_RE"
 const DEFAULT_REMOTE_FUNCTION_NAME = "BX41_RF"
@@ -38,6 +49,27 @@ const MAX_INTEGRITY_TAG_BYTES = 16
 const U16_MODULUS = 0x10000
 const STREAM_EVENT = 1
 const STREAM_FUNCTION = 2
+const INTERNAL_CLOCK_SYNC_OFFSET = 0
+const INTEGRITY_CLOCK_MODE_SYSTEM = "system"
+const INTEGRITY_CLOCK_MODE_SYNCED = "synced"
+const DEFAULT_CLOCK_SYNC_INTERVAL_SECONDS = 2
+const MIN_CLOCK_SYNC_INTERVAL_SECONDS = 0.25
+const MAX_CLOCK_SYNC_INTERVAL_SECONDS = 30
+const DEFAULT_CLOCK_SYNC_ALPHA = 0.2
+const MAX_CLOCK_SYNC_RTT_SECONDS = 2
+
+const function normalize_clock_mode(value: unknown): IntegrityClockMode
+	if value == nil or value == INTEGRITY_CLOCK_MODE_SYSTEM then
+		return INTEGRITY_CLOCK_MODE_SYSTEM
+	end
+
+	if value == INTEGRITY_CLOCK_MODE_SYNCED then
+		return INTEGRITY_CLOCK_MODE_SYNCED
+	end
+
+	Log.panic("setIntegrity options.clockMode must be 'system' or 'synced'", 2)
+	return INTEGRITY_CLOCK_MODE_SYSTEM
+end
 
 const VALID_SERIALIZABLE_DESCRIPTORS = table.freeze({
 	["nil"] = true,
@@ -170,6 +202,42 @@ const function parse_descriptors(kind: string, descriptor_tokens: PackedUnknownT
 	end
 
 	return descriptors
+end
+
+const function parse_descriptor_token_array(kind: string, source: unknown): { SerializableDescriptor }?
+	if source == nil then
+		return nil
+	end
+
+	if type(source) ~= "table" then
+		Log.panic(`{kind} must be an array of descriptor tokens`, 3)
+	end
+
+	const raw = source :: { unknown }
+	const packed = table.pack(unpack(raw)) :: PackedUnknownTuple
+	return parse_descriptors(kind, packed)
+end
+
+const function parse_function_schema(
+	raw_args: PackedUnknownTuple
+): ({ SerializableDescriptor }?, { SerializableDescriptor }?)
+	if raw_args.n ~= 1 then
+		return nil, nil
+	end
+
+	const only = raw_args[1]
+	if type(only) ~= "table" then
+		return nil, nil
+	end
+
+	const schema = only :: { [string]: unknown }
+	if schema.Args == nil and schema.Return == nil then
+		return nil, nil
+	end
+
+	const request_descriptors = parse_descriptor_token_array("defineFunction Args", schema.Args)
+	const schema_response_descriptors = parse_descriptor_token_array("defineFunction Return", schema.Return)
+	return request_descriptors, schema_response_descriptors
 end
 
 const DESCRIPTOR_MATCHERS = table.freeze({
@@ -439,9 +507,15 @@ const function compute_integrity_tag(
 	counter: number,
 	payload: buffer,
 	key: buffer,
-	tag_bytes: number
+	tag_bytes: number,
+	timestamp_seconds: number?
 ): buffer
-	const mac_input = concat_buffers({ make_u8(_to_u8(offset)), make_u16(counter), payload })
+	local mac_input: buffer
+	if timestamp_seconds ~= nil then
+		mac_input = concat_buffers({ make_u8(_to_u8(offset)), make_u16(counter), make_u32(timestamp_seconds), payload })
+	else
+		mac_input = concat_buffers({ make_u8(_to_u8(offset)), make_u16(counter), payload })
+	end
 	const digest = HMAC.sha256(key, mac_input)
 	return copy_buffer_range(digest, 0, tag_bytes)
 end
@@ -451,10 +525,15 @@ const function wrap_integrity_payload(
 	payload: buffer,
 	key: buffer,
 	counter: number,
-	tag_bytes: number
+	tag_bytes: number,
+	include_timestamp: boolean,
+	timestamp_seconds: number?
 ): buffer
 	const counter_buf = make_u16(counter)
-	const tag = compute_integrity_tag(offset, counter, payload, key, tag_bytes)
+	const tag = compute_integrity_tag(offset, counter, payload, key, tag_bytes, timestamp_seconds)
+	if include_timestamp and timestamp_seconds ~= nil then
+		return concat_buffers({ counter_buf, make_u32(timestamp_seconds), payload, tag })
+	end
 	return concat_buffers({ counter_buf, payload, tag })
 end
 
@@ -462,23 +541,32 @@ const function unwrap_integrity_payload(
 	offset: number,
 	framed: buffer,
 	key: buffer,
-	tag_bytes: number
-): (buffer?, number?)
+	tag_bytes: number,
+	include_timestamp: boolean
+): (buffer?, number?, number?)
 	const framed_len = buffer.len(framed)
-	if framed_len < 2 + tag_bytes then
-		return nil, nil
+	const timestamp_bytes = if include_timestamp then 4 else 0
+	if framed_len < 2 + timestamp_bytes + tag_bytes then
+		return nil, nil, nil
 	end
 
 	const counter = buffer.readu16(framed, 0)
-	const payload_len = framed_len - 2 - tag_bytes
-	const payload = copy_buffer_range(framed, 2, payload_len)
-	const incoming_tag = copy_buffer_range(framed, 2 + payload_len, tag_bytes)
-	const expected_tag = compute_integrity_tag(offset, counter, payload, key, tag_bytes)
-	if not buffers_equal(incoming_tag, expected_tag) then
-		return nil, nil
+	local payload_start = 2
+	local timestamp_seconds: number? = nil
+	if include_timestamp then
+		timestamp_seconds = buffer.readu32(framed, payload_start)
+		payload_start += 4
 	end
 
-	return payload, counter
+	const payload_len = framed_len - payload_start - tag_bytes
+	const payload = copy_buffer_range(framed, payload_start, payload_len)
+	const incoming_tag = copy_buffer_range(framed, payload_start + payload_len, tag_bytes)
+	const expected_tag = compute_integrity_tag(offset, counter, payload, key, tag_bytes, timestamp_seconds)
+	if not buffers_equal(incoming_tag, expected_tag) then
+		return nil, nil, nil
+	end
+
+	return payload, counter, timestamp_seconds
 end
 
 const function parse_enum_item(path: string): EnumItem?
@@ -1212,15 +1300,28 @@ const function create_router(): BX41
 	const event_client_handlers = {} :: { [number]: { EventClientHandler } }
 	const function_server_handlers = {} :: { [number]: FunctionServerHandler }
 	const function_client_handlers = {} :: { [number]: FunctionClientHandler }
+	const function_response_descriptors = {} :: { [number]: { SerializableDescriptor } }
 
 	local next_event_offset = 1
 	local next_function_offset = 1
 	local integrity_key: buffer? = nil
 	local integrity_tag_bytes = DEFAULT_INTEGRITY_TAG_BYTES
+	local integrity_include_timestamp = false
+	local integrity_replay_window_seconds: number? = nil
+	local integrity_clock_mode: IntegrityClockMode = INTEGRITY_CLOCK_MODE_SYSTEM
+	local integrity_sync_interval_seconds = DEFAULT_CLOCK_SYNC_INTERVAL_SECONDS
 	local client_outbound_event_counter = 0
 	local client_outbound_function_counter = 0
 	local server_inbound_event_counter: number? = nil
 	local server_inbound_function_counter: number? = nil
+	local client_clock_offset_seconds = 0
+	local client_clock_rtt_seconds: number? = nil
+	local client_clock_last_sync_local_seconds: number? = nil
+	local client_clock_sample_count = 0
+	local client_clock_synced = false
+	local client_clock_sync_elapsed_seconds = 0
+	local client_clock_sync_inflight = false
+	local client_clock_sync_connection: RBXScriptConnection? = nil
 	const server_outbound_event_counters = {} :: { [Player]: number }
 	const server_outbound_function_counters = {} :: { [Player]: number }
 	const client_inbound_event_counters = {} :: { [Player]: number }
@@ -1252,15 +1353,142 @@ const function create_router(): BX41
 		clear_counter_maps()
 	end
 
-	const function set_integrity(secret: unknown, tag_bytes: number?)
+	const function reset_client_clock_state()
+		client_clock_offset_seconds = 0
+		client_clock_rtt_seconds = nil
+		client_clock_last_sync_local_seconds = nil
+		client_clock_sample_count = 0
+		client_clock_synced = false
+		client_clock_sync_elapsed_seconds = 0
+		client_clock_sync_inflight = false
+	end
+
+	const function stop_client_clock_sync_loop()
+		if client_clock_sync_connection ~= nil then
+			client_clock_sync_connection:Disconnect()
+			client_clock_sync_connection = nil
+		end
+		client_clock_sync_inflight = false
+	end
+
+	const function run_client_clock_sync_probe()
+		if client_clock_sync_inflight then
+			return
+		end
+		client_clock_sync_inflight = true
+		const sent_local = os.clock()
+
+		task.spawn(function()
+			const ok, remote_value = pcall(function()
+				return remote_function:InvokeServer(make_offset_buffer(INTERNAL_CLOCK_SYNC_OFFSET), sent_local)
+			end)
+			const received_local = os.clock()
+			client_clock_sync_inflight = false
+
+			if not ok or type(remote_value) ~= "number" then
+				return
+			end
+
+			const server_time = remote_value :: number
+			const rtt = math.max(0, received_local - sent_local)
+			if rtt > MAX_CLOCK_SYNC_RTT_SECONDS then
+				return
+			end
+
+			const offset_sample = server_time - (sent_local + rtt * 0.5)
+			if client_clock_sample_count == 0 then
+				client_clock_offset_seconds = offset_sample
+			else
+				client_clock_offset_seconds = client_clock_offset_seconds
+					+ (offset_sample - client_clock_offset_seconds) * DEFAULT_CLOCK_SYNC_ALPHA
+			end
+
+			if client_clock_rtt_seconds == nil then
+				client_clock_rtt_seconds = rtt
+			else
+				client_clock_rtt_seconds = client_clock_rtt_seconds
+					+ (rtt - (client_clock_rtt_seconds :: number)) * DEFAULT_CLOCK_SYNC_ALPHA
+			end
+
+			client_clock_last_sync_local_seconds = received_local
+			client_clock_sample_count += 1
+			client_clock_synced = true
+		end)
+	end
+
+	const function should_run_client_clock_sync(): boolean
+		if not RunService:IsClient() then
+			return false
+		end
+
+		if integrity_key == nil then
+			return false
+		end
+
+		if not integrity_include_timestamp then
+			return false
+		end
+
+		return integrity_clock_mode == INTEGRITY_CLOCK_MODE_SYNCED
+	end
+
+	const function update_client_clock_sync_loop()
+		if not should_run_client_clock_sync() then
+			stop_client_clock_sync_loop()
+			return
+		end
+
+		if client_clock_sync_connection ~= nil then
+			return
+		end
+
+		client_clock_sync_elapsed_seconds = integrity_sync_interval_seconds
+		client_clock_sync_connection = RunService.Heartbeat:Connect(function(dt: number)
+			client_clock_sync_elapsed_seconds += dt
+			if client_clock_sync_elapsed_seconds < integrity_sync_interval_seconds then
+				return
+			end
+			client_clock_sync_elapsed_seconds = 0
+			run_client_clock_sync_probe()
+		end)
+	end
+
+	const function now_seconds_for_integrity(): number
+		if integrity_clock_mode == INTEGRITY_CLOCK_MODE_SYSTEM then
+			return os.time()
+		end
+
+		if RunService:IsServer() then
+			return math.floor(os.clock())
+		end
+
+		if client_clock_synced then
+			return math.floor(os.clock() + client_clock_offset_seconds)
+		end
+
+		return math.floor(os.clock())
+	end
+
+	const function set_integrity(secret: unknown, tag_bytes: number?, options: IntegrityOptions?)
 		const key = normalize_integrity_key(secret)
 		if key == nil then
 			integrity_key = nil
+			integrity_tag_bytes = DEFAULT_INTEGRITY_TAG_BYTES
+			integrity_include_timestamp = false
+			integrity_replay_window_seconds = nil
+			integrity_clock_mode = INTEGRITY_CLOCK_MODE_SYSTEM
+			integrity_sync_interval_seconds = DEFAULT_CLOCK_SYNC_INTERVAL_SECONDS
+			stop_client_clock_sync_loop()
+			reset_client_clock_state()
 			reset_integrity_counters()
 			return
 		end
 
 		local resolved_tag_bytes = DEFAULT_INTEGRITY_TAG_BYTES
+		local resolved_include_timestamp = false
+		local resolved_replay_window_seconds: number? = nil
+		local resolved_clock_mode: IntegrityClockMode = INTEGRITY_CLOCK_MODE_SYSTEM
+		local resolved_sync_interval_seconds = DEFAULT_CLOCK_SYNC_INTERVAL_SECONDS
 		if tag_bytes ~= nil then
 			if type(tag_bytes) ~= "number" or tag_bytes ~= math.floor(tag_bytes) then
 				Log.panic("setIntegrity tagBytes must be an integer", 2)
@@ -1274,9 +1502,89 @@ const function create_router(): BX41
 			resolved_tag_bytes = tag_bytes
 		end
 
+		if options ~= nil then
+			if type(options) ~= "table" then
+				Log.panic("setIntegrity options must be a table when provided", 2)
+			end
+
+			const include_timestamp = (options :: any).includeTimestamp
+			if include_timestamp ~= nil then
+				if type(include_timestamp) ~= "boolean" then
+					Log.panic("setIntegrity options.includeTimestamp must be a boolean", 2)
+				end
+				resolved_include_timestamp = include_timestamp :: boolean
+			end
+
+			const replay_window = (options :: any).replayWindowSeconds
+			if replay_window ~= nil then
+				if type(replay_window) ~= "number" or replay_window ~= math.floor(replay_window) then
+					Log.panic("setIntegrity options.replayWindowSeconds must be an integer", 2)
+				end
+				if replay_window < 0 then
+					Log.panic("setIntegrity options.replayWindowSeconds must be >= 0", 2)
+				end
+				resolved_replay_window_seconds = replay_window
+				resolved_include_timestamp = true
+			end
+
+			resolved_clock_mode = normalize_clock_mode((options :: any).clockMode)
+
+			const sync_interval = (options :: any).syncIntervalSeconds
+			if sync_interval ~= nil then
+				if type(sync_interval) ~= "number" then
+					Log.panic("setIntegrity options.syncIntervalSeconds must be a number", 2)
+				end
+				if sync_interval < MIN_CLOCK_SYNC_INTERVAL_SECONDS
+					or sync_interval > MAX_CLOCK_SYNC_INTERVAL_SECONDS
+				then
+					Log.panic(
+						`setIntegrity options.syncIntervalSeconds must be in [{MIN_CLOCK_SYNC_INTERVAL_SECONDS}, {MAX_CLOCK_SYNC_INTERVAL_SECONDS}]`,
+						2
+					)
+				end
+				resolved_sync_interval_seconds = sync_interval
+			end
+		end
+
+		if resolved_replay_window_seconds ~= nil and not resolved_include_timestamp then
+			Log.panic("setIntegrity replayWindowSeconds requires includeTimestamp=true", 2)
+		end
+
+		if resolved_clock_mode == INTEGRITY_CLOCK_MODE_SYNCED and not resolved_include_timestamp then
+			Log.panic("setIntegrity options.clockMode='synced' requires includeTimestamp=true", 2)
+		end
+
 		integrity_key = key
 		integrity_tag_bytes = resolved_tag_bytes
+		integrity_include_timestamp = resolved_include_timestamp
+		integrity_replay_window_seconds = resolved_replay_window_seconds
+		integrity_clock_mode = resolved_clock_mode
+		integrity_sync_interval_seconds = resolved_sync_interval_seconds
+		reset_client_clock_state()
+		update_client_clock_sync_loop()
 		reset_integrity_counters()
+	end
+
+	const function get_integrity_config(): IntegrityConfig
+		return table.freeze({
+			enabled = integrity_key ~= nil,
+			tagBytes = integrity_tag_bytes,
+			includeTimestamp = integrity_include_timestamp,
+			replayWindowSeconds = integrity_replay_window_seconds,
+			clockMode = integrity_clock_mode,
+			syncIntervalSeconds = integrity_sync_interval_seconds,
+		}) :: IntegrityConfig
+	end
+
+	const function get_clock_state(): ClockState
+		return table.freeze({
+			mode = integrity_clock_mode,
+			synced = client_clock_synced,
+			offsetSeconds = client_clock_offset_seconds,
+			rttSeconds = client_clock_rtt_seconds,
+			lastSyncLocalSeconds = client_clock_last_sync_local_seconds,
+			sampleCount = client_clock_sample_count,
+		}) :: ClockState
 	end
 
 	const function seal_payload(offset: number, payload: buffer, target_player: Player?, stream: number): buffer
@@ -1313,7 +1621,16 @@ const function create_router(): BX41
 			end
 		end
 
-		return wrap_integrity_payload(offset, payload, key, counter, integrity_tag_bytes)
+		const timestamp_seconds = if integrity_include_timestamp then now_seconds_for_integrity() else nil
+		return wrap_integrity_payload(
+			offset,
+			payload,
+			key,
+			counter,
+			integrity_tag_bytes,
+			integrity_include_timestamp,
+			timestamp_seconds
+		)
 	end
 
 	const function open_payload(
@@ -1333,10 +1650,34 @@ const function create_router(): BX41
 			return payload
 		end
 
-		const unwrapped, counter = unwrap_integrity_payload(offset, payload, key, integrity_tag_bytes)
+		const unwrapped, counter, timestamp_seconds = unwrap_integrity_payload(
+			offset,
+			payload,
+			key,
+			integrity_tag_bytes,
+			integrity_include_timestamp
+		)
 		if unwrapped == nil or counter == nil then
 			Log.warn(`{context} failed integrity validation`)
 			return nil
+		end
+
+		if integrity_include_timestamp and integrity_replay_window_seconds ~= nil then
+			if integrity_clock_mode == INTEGRITY_CLOCK_MODE_SYNCED and RunService:IsClient() and not client_clock_synced then
+				-- if it hasnt synced yet, this prevent a runtime error where events on start get dropped
+				return unwrapped
+			end
+
+			if timestamp_seconds == nil then
+				Log.warn(`{context} missing integrity timestamp`)
+				return nil
+			end
+
+			const skew = math.abs(now_seconds_for_integrity() - timestamp_seconds)
+			if skew > integrity_replay_window_seconds then
+				Log.warn(`{context} rejected integrity timestamp skew={skew}s`)
+				return nil
+			end
 		end
 
 		if RunService:IsServer() then
@@ -1480,10 +1821,14 @@ const function create_router(): BX41
 			if offset == nil then
 				return nil
 			end
+			if offset == INTERNAL_CLOCK_SYNC_OFFSET then
+				return os.clock()
+			end
 			const handler = function_server_handlers[offset]
 			if handler == nil then
 				return nil
 			end
+			const response_descriptors = function_response_descriptors[offset]
 
 			const legacy = table.pack(...) :: PackedUnknownTuple
 			const opened = open_payload(offset, legacy[1], player, `OnServerInvoke offset={offset}`, STREAM_FUNCTION)
@@ -1506,6 +1851,14 @@ const function create_router(): BX41
 			response_raw.n = protected.n - 1
 			for i = 2, protected.n do
 				response_raw[i - 1] = protected[i] :: Serializable
+			end
+
+			if response_descriptors ~= nil then
+				assert_descriptor_values(
+					response_raw,
+					response_descriptors,
+					`OnServerInvoke response offset={offset}`
+				)
 			end
 
 			const response_buffer, response_instances = serialize_tuple(response_raw, `OnServerInvoke response offset={offset}`)
@@ -1554,6 +1907,7 @@ const function create_router(): BX41
 			if handler == nil then
 				return nil
 			end
+			const response_descriptors = function_response_descriptors[offset]
 
 			const legacy = table.pack(...) :: PackedUnknownTuple
 			const opened = open_payload(offset, legacy[1], nil, `OnClientInvoke offset={offset}`, STREAM_FUNCTION)
@@ -1576,6 +1930,14 @@ const function create_router(): BX41
 			response_raw.n = protected.n - 1
 			for i = 2, protected.n do
 				response_raw[i - 1] = protected[i] :: Serializable
+			end
+
+			if response_descriptors ~= nil then
+				assert_descriptor_values(
+					response_raw,
+					response_descriptors,
+					`OnClientInvoke response offset={offset}`
+				)
 			end
 
 			const response_buffer, response_instances = serialize_tuple(response_raw, `OnClientInvoke response offset={offset}`)
@@ -1702,11 +2064,26 @@ const function create_router(): BX41
 		return table.freeze(api)
 	end
 
-	const function define_function(channel_mode: unknown, ...: unknown): any
+	const function define_function<T...>(channel_mode: unknown, ...: unknown): any
 		const routed_offset = allocate_offset("function", next_function_offset)
 		next_function_offset += 1
 		const mode = normalize_channel(channel_mode)
-		const descriptors = parse_descriptors("defineFunction", table.pack(...) :: PackedUnknownTuple)
+		const raw_descriptors = table.pack(...) :: PackedUnknownTuple
+		local descriptors: { SerializableDescriptor }? = nil
+		local response_descriptors: { SerializableDescriptor }? = nil
+		const schema_request_descriptors, schema_response_descriptors = parse_function_schema(raw_descriptors)
+		if schema_request_descriptors ~= nil or schema_response_descriptors ~= nil then
+			descriptors = schema_request_descriptors
+			response_descriptors = schema_response_descriptors
+		else
+			descriptors = parse_descriptors("defineFunction", raw_descriptors)
+		end
+
+		if response_descriptors ~= nil then
+			function_response_descriptors[routed_offset] = response_descriptors
+		else
+			function_response_descriptors[routed_offset] = nil
+		end
 
 		const api = {
 			offset = routed_offset,
@@ -1753,6 +2130,14 @@ const function create_router(): BX41
 				if response_payloads == nil then
 					Log.panic(`invokeServer offset={routed_offset} received malformed response`, 2)
 					return nil
+				end
+
+				if response_descriptors ~= nil then
+					assert_descriptor_values(
+						response_payloads,
+						response_descriptors,
+						`invokeServer offset={routed_offset} response`
+					)
 				end
 
 				return unpack(response_payloads, 1, response_payloads.n)
@@ -1803,21 +2188,29 @@ const function create_router(): BX41
 					return nil
 				end
 
+				if response_descriptors ~= nil then
+					assert_descriptor_values(
+						response_payloads,
+						response_descriptors,
+						`invokeClient offset={routed_offset} response`
+					)
+				end
+
 				return unpack(response_payloads, 1, response_payloads.n)
 			end,
 
-			onServer = function(handler: (player: Player, ...Serializable) -> ...any)
+			onServer = function(handler: (player: Player, ...Serializable) -> T...)
 				if mode == CHANNEL_SERVER then
 					Log.panic("onServer is disabled for Server channel routes", 2)
 				end
-				function_server_handlers[routed_offset] = handler :: FunctionServerHandler
+				function_server_handlers[routed_offset] = (handler :: any) :: FunctionServerHandler
 			end,
 
-			onClient = function(handler: (...Serializable) -> ...any)
+			onClient = function(handler: (...Serializable) -> T...)
 				if mode == CHANNEL_CLIENT then
 					Log.panic("onClient is disabled for Client channel routes", 2)
 				end
-				function_client_handlers[routed_offset] = handler :: FunctionClientHandler
+				function_client_handlers[routed_offset] = (handler :: any) :: FunctionClientHandler
 			end,
 		}
 
@@ -1828,6 +2221,8 @@ const function create_router(): BX41
 		defineEvent = define_event,
 		defineFunction = define_function,
 		setIntegrity = set_integrity,
+		getIntegrityConfig = get_integrity_config,
+		getClockState = get_clock_state,
 	}) :: any) :: BX41
 end
 
@@ -1844,6 +2239,8 @@ return (table.freeze({
 	defineEvent = router.defineEvent,
 	defineFunction = router.defineFunction,
 	setIntegrity = router.setIntegrity,
+	getIntegrityConfig = router.getIntegrityConfig,
+	getClockState = router.getClockState,
 	Channel = table.freeze({
 		Server = "Server" :: "Server",
 		Client = "Client" :: "Client",

@@ -50,6 +50,38 @@ export type DescriptorToken<T = unknown> = {
 	_value: T,
 }
 
+export type FunctionSchema = {
+	Args: { DescriptorToken<any> }?,
+	Return: { DescriptorToken<any> }?,
+}
+
+export type IntegrityClockMode = "system" | "synced"
+
+export type IntegrityOptions = {
+	includeTimestamp: boolean?,
+	replayWindowSeconds: number?,
+	clockMode: IntegrityClockMode?,
+	syncIntervalSeconds: number?,
+}
+
+export type IntegrityConfig = {
+	enabled: boolean,
+	tagBytes: number,
+	includeTimestamp: boolean,
+	replayWindowSeconds: number?,
+	clockMode: IntegrityClockMode,
+	syncIntervalSeconds: number,
+}
+
+export type ClockState = {
+	mode: IntegrityClockMode,
+	synced: boolean,
+	offsetSeconds: number,
+	rttSeconds: number?,
+	lastSyncLocalSeconds: number?,
+	sampleCount: number,
+}
+
 export type ServerEventChannel<Args... = ()> = {
 	offset: number,
 	fireClient: (player: Player, Args...) -> (),
@@ -92,8 +124,30 @@ export type BothFunctionChannel<Args... = ()> = {
 	onClient: (handler: (Args...) -> ...Serializable) -> (),
 }
 
+export type TypedServerFunctionChannel<R...> = {
+	offset: number,
+	invokeClient: (player: Player, ...Serializable) -> R...,
+	onClient: (handler: (...Serializable) -> R...) -> (),
+}
+
+export type TypedClientFunctionChannel<R...> = {
+	offset: number,
+	invokeServer: (...Serializable) -> R...,
+	onServer: (handler: (player: Player, ...Serializable) -> R...) -> (),
+}
+
+export type TypedBothFunctionChannel<R...> = {
+	offset: number,
+	invokeServer: (...Serializable) -> R...,
+	invokeClient: (player: Player, ...Serializable) -> R...,
+	onServer: (handler: (player: Player, ...Serializable) -> R...) -> (),
+	onClient: (handler: (...Serializable) -> R...) -> (),
+}
+
 export type BX41 = {
-	setIntegrity: (secret: string | buffer?, tagBytes: number?) -> (),
+	setIntegrity: (secret: string | buffer?, tagBytes: number?, options: IntegrityOptions?) -> (),
+	getIntegrityConfig: () -> IntegrityConfig,
+	getClockState: () -> ClockState,
 	defineEvent: ((channel: "Server") -> ServerEventChannel<>)
 		& (<A>(channel: "Server", a: DescriptorToken<A>) -> ServerEventChannel<A>)
 		& (<A, B>(
@@ -151,66 +205,16 @@ export type BX41 = {
 			d: DescriptorToken<D>
 		) -> BothEventChannel<A, B, C, D>)
 		& ((channel: Channel, ...DescriptorToken<any>) -> BothEventChannel<Serializable>),
-	defineFunction: ((channel: "Server") -> ServerFunctionChannel<>)
-		& (<A>(channel: "Server", a: DescriptorToken<A>) -> ServerFunctionChannel<A>)
-		& (<A, B>(
-			channel: "Server",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>
-		) -> ServerFunctionChannel<A, B>)
-		& (<A, B, C>(
-			channel: "Server",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>
-		) -> ServerFunctionChannel<A, B, C>)
-		& (<A, B, C, D>(
-			channel: "Server",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>,
-			d: DescriptorToken<D>
-		) -> ServerFunctionChannel<A, B, C, D>)
-		& ((channel: "Client") -> ClientFunctionChannel<>)
-		& (<A>(channel: "Client", a: DescriptorToken<A>) -> ClientFunctionChannel<A>)
-		& (<A, B>(
-			channel: "Client",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>
-		) -> ClientFunctionChannel<A, B>)
-		& (<A, B, C>(
-			channel: "Client",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>
-		) -> ClientFunctionChannel<A, B, C>)
-		& (<A, B, C, D>(
-			channel: "Client",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>,
-			d: DescriptorToken<D>
-		) -> ClientFunctionChannel<A, B, C, D>)
-		& ((channel: "Both") -> BothFunctionChannel<>)
-		& (<A>(channel: "Both", a: DescriptorToken<A>) -> BothFunctionChannel<A>)
-		& (<A, B>(
-			channel: "Both",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>
-		) -> BothFunctionChannel<A, B>)
-		& (<A, B, C>(
-			channel: "Both",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>
-		) -> BothFunctionChannel<A, B, C>)
-		& (<A, B, C, D>(
-			channel: "Both",
-			a: DescriptorToken<A>,
-			b: DescriptorToken<B>,
-			c: DescriptorToken<C>,
-			d: DescriptorToken<D>
-		) -> BothFunctionChannel<A, B, C, D>)
+	defineFunction: ((channel: "Server", ...DescriptorToken<any>) -> ServerFunctionChannel<Serializable>)
+		& ((channel: "Client", ...DescriptorToken<any>) -> ClientFunctionChannel<Serializable>)
+		& ((channel: "Both", ...DescriptorToken<any>) -> BothFunctionChannel<Serializable>)
+		& (<R...>(channel: "Server", ...DescriptorToken<any>) -> TypedServerFunctionChannel<R...>)
+		& (<R...>(channel: "Client", ...DescriptorToken<any>) -> TypedClientFunctionChannel<R...>)
+		& (<R...>(channel: "Both", ...DescriptorToken<any>) -> TypedBothFunctionChannel<R...>)
+		& (<R...>(channel: "Server", schema: FunctionSchema) -> TypedServerFunctionChannel<R...>)
+		& (<R...>(channel: "Client", schema: FunctionSchema) -> TypedClientFunctionChannel<R...>)
+		& (<R...>(channel: "Both", schema: FunctionSchema) -> TypedBothFunctionChannel<R...>)
+		& ((channel: Channel, schema: FunctionSchema) -> BothFunctionChannel<Serializable>)
 		& ((channel: Channel, ...DescriptorToken<any>) -> BothFunctionChannel<Serializable>),
 }
 
