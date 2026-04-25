@@ -3,7 +3,7 @@
 export type Channel = "Server" | "Client" | "Both"
 
 export type Disconnectable = RBXScriptConnection | {
-	Disconnect: (self: any) -> (),
+	Disconnect: (self: Disconnectable) -> (),
 }
 
 export type Serializable =
@@ -45,12 +45,12 @@ export type SerializableDescriptor =
 	| "UDim2"
 	| "TweenInfo"
 
-export type DescriptorToken<T> = {
+export type DescriptorToken<T = unknown> = {
 	_descriptor: SerializableDescriptor,
 	_value: T,
 }
 
-export type ServerEventChannel<Args...> = {
+export type ServerEventChannel<Args... = ()> = {
 	offset: number,
 	fireClient: (player: Player, Args...) -> (),
 	fireAllClients: (Args...) -> (),
@@ -63,7 +63,7 @@ export type ClientEventChannel<Args...> = {
 	onServer: (handler: (player: Player, Args...) -> ()) -> Disconnectable,
 }
 
-export type BothEventChannel<Args...> = {
+export type BothEventChannel<Args... = ()> = {
 	offset: number,
 	fireServer: (Args...) -> (),
 	fireClient: (player: Player, Args...) -> (),
@@ -72,19 +72,19 @@ export type BothEventChannel<Args...> = {
 	onClient: (handler: (Args...) -> ()) -> Disconnectable,
 }
 
-export type ServerFunctionChannel<Args...> = {
+export type ServerFunctionChannel<Args... = ()> = {
 	offset: number,
 	invokeClient: (player: Player, Args...) -> ...Serializable,
 	onClient: (handler: (Args...) -> ...Serializable) -> (),
 }
 
-export type ClientFunctionChannel<Args...> = {
+export type ClientFunctionChannel<Args... = ()> = {
 	offset: number,
 	invokeServer: (Args...) -> ...Serializable,
 	onServer: (handler: (player: Player, Args...) -> ...Serializable) -> (),
 }
 
-export type BothFunctionChannel<Args...> = {
+export type BothFunctionChannel<Args... = ()> = {
 	offset: number,
 	invokeServer: (Args...) -> ...Serializable,
 	invokeClient: (player: Player, Args...) -> ...Serializable,

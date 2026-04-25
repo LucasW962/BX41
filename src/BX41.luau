@@ -7,7 +7,7 @@ const RunService = game:GetService("RunService")
 const Players = game:GetService("Players")
 
 const Types = require("./Types")
-const Log: typeof(require("./Log")) = require("./Log")
+const Log = require("./Log")
 const HMAC = require("./Hashing/HMAC")
 
 type Channel = Types.Channel
