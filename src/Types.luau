@@ -50,8 +50,6 @@ export type DescriptorToken<T> = {
 	_value: T,
 }
 
--- Server channel: server fires to clients.
--- Available: fireClient, fireAllClients, onClient
 export type ServerEventChannel<Args...> = {
 	offset: number,
 	fireClient: (player: Player, Args...) -> (),
@@ -59,15 +57,12 @@ export type ServerEventChannel<Args...> = {
 	onClient: (handler: (Args...) -> ()) -> Disconnectable,
 }
 
--- Client channel: client fires to server.
--- Available: fireServer, onServer
 export type ClientEventChannel<Args...> = {
 	offset: number,
 	fireServer: (Args...) -> (),
 	onServer: (handler: (player: Player, Args...) -> ()) -> Disconnectable,
 }
 
--- Both channel: bidirectional.
 export type BothEventChannel<Args...> = {
 	offset: number,
 	fireServer: (Args...) -> (),
@@ -77,21 +72,18 @@ export type BothEventChannel<Args...> = {
 	onClient: (handler: (Args...) -> ()) -> Disconnectable,
 }
 
--- Server channel: server invokes a specific client.
 export type ServerFunctionChannel<Args...> = {
 	offset: number,
 	invokeClient: (player: Player, Args...) -> ...Serializable,
 	onClient: (handler: (Args...) -> ...Serializable) -> (),
 }
 
--- Client channel: client invokes the server.
 export type ClientFunctionChannel<Args...> = {
 	offset: number,
 	invokeServer: (Args...) -> ...Serializable,
 	onServer: (handler: (player: Player, Args...) -> ...Serializable) -> (),
 }
 
--- Both channel: bidirectional invocations.
 export type BothFunctionChannel<Args...> = {
 	offset: number,
 	invokeServer: (Args...) -> ...Serializable,
@@ -109,6 +101,19 @@ export type BX41 = {
 			a: DescriptorToken<A>,
 			b: DescriptorToken<B>
 		) -> ServerEventChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Server",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> ServerEventChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Server",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> ServerEventChannel<A, B, C, D>)
 		& ((channel: "Client") -> ClientEventChannel<>)
 		& (<A>(channel: "Client", a: DescriptorToken<A>) -> ClientEventChannel<A>)
 		& (<A, B>(
@@ -116,9 +121,35 @@ export type BX41 = {
 			a: DescriptorToken<A>,
 			b: DescriptorToken<B>
 		) -> ClientEventChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Client",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> ClientEventChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Client",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> ClientEventChannel<A, B, C, D>)
 		& ((channel: "Both") -> BothEventChannel<>)
 		& (<A>(channel: "Both", a: DescriptorToken<A>) -> BothEventChannel<A>)
 		& (<A, B>(channel: "Both", a: DescriptorToken<A>, b: DescriptorToken<B>) -> BothEventChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Both",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> BothEventChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Both",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> BothEventChannel<A, B, C, D>)
 		& ((channel: Channel, ...DescriptorToken<any>) -> BothEventChannel<Serializable>),
 	defineFunction: ((channel: "Server") -> ServerFunctionChannel<>)
 		& (<A>(channel: "Server", a: DescriptorToken<A>) -> ServerFunctionChannel<A>)
@@ -127,6 +158,19 @@ export type BX41 = {
 			a: DescriptorToken<A>,
 			b: DescriptorToken<B>
 		) -> ServerFunctionChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Server",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> ServerFunctionChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Server",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> ServerFunctionChannel<A, B, C, D>)
 		& ((channel: "Client") -> ClientFunctionChannel<>)
 		& (<A>(channel: "Client", a: DescriptorToken<A>) -> ClientFunctionChannel<A>)
 		& (<A, B>(
@@ -134,6 +178,19 @@ export type BX41 = {
 			a: DescriptorToken<A>,
 			b: DescriptorToken<B>
 		) -> ClientFunctionChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Client",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> ClientFunctionChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Client",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> ClientFunctionChannel<A, B, C, D>)
 		& ((channel: "Both") -> BothFunctionChannel<>)
 		& (<A>(channel: "Both", a: DescriptorToken<A>) -> BothFunctionChannel<A>)
 		& (<A, B>(
@@ -141,6 +198,19 @@ export type BX41 = {
 			a: DescriptorToken<A>,
 			b: DescriptorToken<B>
 		) -> BothFunctionChannel<A, B>)
+		& (<A, B, C>(
+			channel: "Both",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>
+		) -> BothFunctionChannel<A, B, C>)
+		& (<A, B, C, D>(
+			channel: "Both",
+			a: DescriptorToken<A>,
+			b: DescriptorToken<B>,
+			c: DescriptorToken<C>,
+			d: DescriptorToken<D>
+		) -> BothFunctionChannel<A, B, C, D>)
 		& ((channel: Channel, ...DescriptorToken<any>) -> BothFunctionChannel<Serializable>),
 }
 
