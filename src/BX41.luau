@@ -30,8 +30,8 @@ type FunctionServerHandler = (player: Player, ...Serializable) -> ...Serializabl
 type FunctionClientHandler = (...Serializable) -> ...Serializable
 
 -- SIDE NOTE: these are exported as functions have to be casted, overloads are too complex
-export type ServerFunctionChannel<Args...> = Types.ServerFunctionChannel<Args...>
-export type ClientFunctionChannel<Args...> = Types.ClientFunctionChannel<Args...>
+export type ServerFunctionChannel<Sig> = Types.ServerFunctionChannel<Sig>
+export type ClientFunctionChannel<Sig> = Types.ClientFunctionChannel<Sig>
 export type ServerFunctionReturns<R...> = Types.TypedServerFunctionChannel<R...>
 export type ClientFunctionReturns<R...> = Types.TypedClientFunctionChannel<R...>
 export type BothFunctionReturns<R...> = Types.TypedBothFunctionChannel<R...>

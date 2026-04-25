@@ -9,9 +9,12 @@ const Packets = {
     ServerFunction = BX41.defineFunction(Channel.Server, {
         Args = {Serializables.Boolean, Serializables.Buffer},
         Return = {Serializables.String}
-    }) :: BX41.ServerFunctionChannel,
+    }) :: BX41.ServerFunctionChannel<(boolean, buffer) -> string>,
+    Second = BX41.defineFunction("Client", {
+        Args = {Serializables.Number},
+        Return = {Serializables.Number, Serializables.Vector3},
+    }) :: BX41.ClientFunctionChannel<(number) -> (number, Vector3)>,
 }
 
-Packets
 
 return table.freeze(Packets)

@@ -55,6 +55,29 @@ export type FunctionSchema = {
 	Return: { DescriptorToken<any> }?,
 }
 
+type function fn_prepend_parameter(sig: type, first_param: type)
+	if sig.tag ~= "function" then
+		return types.never
+	end
+
+	local params = sig:parameters()
+	local returns = sig:returns()
+	local generics = sig:generics()
+	local head = { first_param }
+
+	if params.head ~= nil then
+		for _, param in params.head do
+			table.insert(head, param)
+		end
+	end
+
+	return types.newfunction(
+		{ head = head, tail = params.tail },
+		{ head = returns.head, tail = returns.tail },
+		generics
+	)
+end
+
 export type IntegrityClockMode = "system" | "synced"
 
 export type IntegrityOptions = {
@@ -104,45 +127,29 @@ export type BothEventChannel<Args... = ()> = {
 	onClient: (handler: (Args...) -> ()) -> Disconnectable,
 }
 
-export type ServerFunctionChannel<Args... = ()> = {
+export type ServerFunctionChannel<Sig = (...Serializable) -> ...Serializable> = {
 	offset: number,
-	invokeClient: (player: Player, Args...) -> ...Serializable,
-	onClient: (handler: (Args...) -> ...Serializable) -> (),
+	invokeClient: fn_prepend_parameter<Sig, Player>,
+	onClient: (handler: Sig) -> (),
 }
 
-export type ClientFunctionChannel<Args... = ()> = {
+export type ClientFunctionChannel<Sig = (...Serializable) -> ...Serializable> = {
 	offset: number,
-	invokeServer: (Args...) -> ...Serializable,
-	onServer: (handler: (player: Player, Args...) -> ...Serializable) -> (),
+	invokeServer: Sig,
+	onServer: (handler: fn_prepend_parameter<Sig, Player>) -> (),
 }
 
-export type BothFunctionChannel<Args... = ()> = {
+export type BothFunctionChannel<Sig = (...Serializable) -> ...Serializable> = {
 	offset: number,
-	invokeServer: (Args...) -> ...Serializable,
-	invokeClient: (player: Player, Args...) -> ...Serializable,
-	onServer: (handler: (player: Player, Args...) -> ...Serializable) -> (),
-	onClient: (handler: (Args...) -> ...Serializable) -> (),
+	invokeServer: Sig,
+	invokeClient: fn_prepend_parameter<Sig, Player>,
+	onServer: (handler: fn_prepend_parameter<Sig, Player>) -> (),
+	onClient: (handler: Sig) -> (),
 }
 
-export type TypedServerFunctionChannel<R...> = {
-	offset: number,
-	invokeClient: (player: Player, ...Serializable) -> R...,
-	onClient: (handler: (...Serializable) -> R...) -> (),
-}
-
-export type TypedClientFunctionChannel<R...> = {
-	offset: number,
-	invokeServer: (...Serializable) -> R...,
-	onServer: (handler: (player: Player, ...Serializable) -> R...) -> (),
-}
-
-export type TypedBothFunctionChannel<R...> = {
-	offset: number,
-	invokeServer: (...Serializable) -> R...,
-	invokeClient: (player: Player, ...Serializable) -> R...,
-	onServer: (handler: (player: Player, ...Serializable) -> R...) -> (),
-	onClient: (handler: (...Serializable) -> R...) -> (),
-}
+export type TypedServerFunctionChannel<R...> = ServerFunctionChannel<(...Serializable) -> R...>
+export type TypedClientFunctionChannel<R...> = ClientFunctionChannel<(...Serializable) -> R...>
+export type TypedBothFunctionChannel<R...> = BothFunctionChannel<(...Serializable) -> R...>
 
 export type BX41 = {
 	setIntegrity: (secret: string | buffer?, tagBytes: number?, options: IntegrityOptions?) -> (),
@@ -205,17 +212,20 @@ export type BX41 = {
 			d: DescriptorToken<D>
 		) -> BothEventChannel<A, B, C, D>)
 		& ((channel: Channel, ...DescriptorToken<any>) -> BothEventChannel<Serializable>),
-	defineFunction: ((channel: "Server", ...DescriptorToken<any>) -> ServerFunctionChannel<Serializable>)
-		& ((channel: "Client", ...DescriptorToken<any>) -> ClientFunctionChannel<Serializable>)
-		& ((channel: "Both", ...DescriptorToken<any>) -> BothFunctionChannel<Serializable>)
+	defineFunction: ((channel: "Server", ...DescriptorToken<any>) -> ServerFunctionChannel)
+		& ((channel: "Client", ...DescriptorToken<any>) -> ClientFunctionChannel)
+		& ((channel: "Both", ...DescriptorToken<any>) -> BothFunctionChannel)
+		& (<Sig>(channel: "Server", schema: FunctionSchema) -> ServerFunctionChannel<Sig>)
+		& (<Sig>(channel: "Client", schema: FunctionSchema) -> ClientFunctionChannel<Sig>)
+		& (<Sig>(channel: "Both", schema: FunctionSchema) -> BothFunctionChannel<Sig>)
 		& (<R...>(channel: "Server", ...DescriptorToken<any>) -> TypedServerFunctionChannel<R...>)
 		& (<R...>(channel: "Client", ...DescriptorToken<any>) -> TypedClientFunctionChannel<R...>)
 		& (<R...>(channel: "Both", ...DescriptorToken<any>) -> TypedBothFunctionChannel<R...>)
 		& (<R...>(channel: "Server", schema: FunctionSchema) -> TypedServerFunctionChannel<R...>)
 		& (<R...>(channel: "Client", schema: FunctionSchema) -> TypedClientFunctionChannel<R...>)
 		& (<R...>(channel: "Both", schema: FunctionSchema) -> TypedBothFunctionChannel<R...>)
-		& ((channel: Channel, schema: FunctionSchema) -> BothFunctionChannel<Serializable>)
-		& ((channel: Channel, ...DescriptorToken<any>) -> BothFunctionChannel<Serializable>),
+		& ((channel: Channel, schema: FunctionSchema) -> BothFunctionChannel)
+		& ((channel: Channel, ...DescriptorToken<any>) -> BothFunctionChannel),
 }
 
 export type BX41Module = BX41 & {
